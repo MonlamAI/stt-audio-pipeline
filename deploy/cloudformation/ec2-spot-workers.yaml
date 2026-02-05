@@ -37,7 +37,7 @@ Parameters:
 
   GitRepoUrl:
     Type: String
-    Default: 'https://github.com/monlam-ai/stt-split-audio.git'
+    Default: 'https://github.com/MonlamAI/stt-audio-pipeline.git'
     Description: Git repository URL for worker code
 
 Resources:
@@ -101,17 +101,12 @@ Resources:
         - !Ref WorkerRole
 
   # ============================================================
-  # Security Group (outbound only)
+  # Security Group (outbound only, uses default VPC)
   # ============================================================
   WorkerSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupName: !Sub 'stt-worker-sg-${Environment}'
       GroupDescription: Security group for STT worker instances (outbound only)
-      SecurityGroupEgress:
-        - IpProtocol: -1
-          CidrIp: 0.0.0.0/0
-          Description: Allow all outbound traffic
       Tags:
         - Key: Name
           Value: !Sub 'stt-worker-sg-${Environment}'
