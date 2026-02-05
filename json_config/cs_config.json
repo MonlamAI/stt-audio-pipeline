@@ -1,0 +1,20 @@
+{
+    "DEPARTMENT": "CS",
+    "FROM_ID": 404,
+    "TO_ID": 405,
+    "ID_COL": "STT_0000",
+    "LINK_COL": "Audio Link (in Drive)",
+    "SR_COL": "S. no",
+    "PREFIX": "STT_CS",
+    "SEGMENT_DIR": "../data/segments_cs",
+    "DOWNLOAD_AUDIO_DIR": "../data/CS_full_audio",
+    "DOWNLOAD_VEDIOS_DIR": "../data/CS_full_videos",
+    "FILE_FORMAT": "wav",
+    "S3_BUCKET": "s3://monlam.ai.stt/wav16k/",
+    "SHEET_ID": "1aDecTnM238oiSzl3_8RQ1AJ0ygIp5jWHyn_7bLMfR2c",
+    "GROUP_ID": 4,
+    "STT_CS_GA" : 4,
+    "STT_CS_GB" : 3,
+    "STT_CS_GF" : 6
+
+}

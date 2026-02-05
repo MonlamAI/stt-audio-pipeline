@@ -1,0 +1,20 @@
+{
+    "DEPARTMENT": "NS",
+    "FROM_ID": 144,
+    "TO_ID": 216,
+    "ID_COL": "ID",
+    "LINK_COL": "youtube link",
+    "SR_COL": "Sr. no",
+    "PREFIX": "STT_NS",
+    "SEGMENT_DIR": "../data/segments_ns",
+    "DOWNLOAD_AUDIO_DIR": "../data/NS_full_audio",
+    "DOWNLOAD_VEDIOS_DIR": "../data/NS_full_videos",
+    "FILE_FORMAT": "wav",
+    "S3_BUCKET": "s3://monlam.ai.stt/wav16k/",
+    "SHEET_ID": "1CfNpMZNJhVhw8auTI8Q59qBeoB0ygD0PTtb-vbDYOkE",
+    "GROUP_ID": 8,
+    "STT_NS_GA" : 5,
+    "STT_NS_GB" : 8,
+    "STT_NS_GG" : 14,
+    "STT_NS_GH" : 15
+}

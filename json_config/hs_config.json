@@ -1,0 +1,18 @@
+{
+    "DEPARTMENT": "HS",
+    "FROM_ID": 421,
+    "TO_ID": 425,
+    "ID_COL": "ID",
+    "LINK_COL": "YouTube link",
+    "SR_COL": "Sr.no",
+    "PREFIX": "STT_HS",
+    "SEGMENT_DIR": "../data/segments_hs",
+    "DOWNLOAD_AUDIO_DIR": "../data/HS_full_audio",
+    "DOWNLOAD_VEDIOS_DIR": "../data/HS_full_videos",
+    "FILE_FORMAT": "wav",
+    "S3_BUCKET": "s3://monlam.ai.stt/wav16k/",
+    "SHEET_ID": "1SjlnWsr6YVhBIW6EaS0ITmboDmEuj2VnxGRNL50OPx4",
+    "GROUP_ID": 21,
+    "STT_HS_GA" : 19,
+    "STT_HS_GB" : 21
+}

@@ -1,0 +1,19 @@
+{
+    "DEPARTMENT": "PC",
+    "FROM_ID": 582,
+    "TO_ID": 627,
+    "ID_COL": "ID",
+    "LINK_COL": "YouTube link",
+    "SR_COL": "Sr.no",
+    "PREFIX": "STT_PC",
+    "SEGMENT_DIR": "../data/segments_pc",
+    "DOWNLOAD_AUDIO_DIR": "../data/PC_full_audio",
+    "DOWNLOAD_VEDIOS_DIR": "../data/PC_full_videos",
+    "FILE_FORMAT": "wav",
+    "S3_BUCKET": "s3://monlam.ai.stt/wav16k/",
+    "SHEET_ID": "1U6Bm7mx1XpbgvHzXlxGv_BQR-bhBern5",
+    "COOKIES_PATH": "./cookies.txt",
+    "GROUP_ID": 16,
+    "STT_PC_GA": 16
+    
+}

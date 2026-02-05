@@ -1,0 +1,416 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'STT Audio Processing Pipeline - EC2 Spot Auto Scaling Workers'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: Environment name
+
+  SQSQueueName:
+    Type: String
+    Default: 'stt-split-jobs'
+    Description: Name of the SQS queue to poll for jobs
+
+  S3OutputBucket:
+    Type: String
+    Default: 'monlamai-stt-raw-audio'
+    Description: S3 bucket for output segments
+
+  MinIOEndpoint:
+    Type: String
+    Default: 's3.monlam.ai'
+    Description: MinIO endpoint for source audio
+
+  MaxWorkers:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    MaxValue: 100
+    Description: Maximum number of worker instances
+
+  InstanceTypes:
+    Type: CommaDelimitedList
+    Default: 'c6i.large,c6a.large,c5.large,c5a.large'
+    Description: EC2 instance types for Spot fleet (comma-separated)
+
+  GitRepoUrl:
+    Type: String
+    Default: 'https://github.com/monlam-ai/stt-split-audio.git'
+    Description: Git repository URL for worker code
+
+Resources:
+  # ============================================================
+  # IAM Role for EC2 Workers
+  # ============================================================
+  WorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'stt-worker-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: SQSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:GetQueueUrl
+                  - sqs:ChangeMessageVisibility
+                Resource: !Sub 'arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:${SQSQueueName}'
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3OutputBucket}'
+                  - !Sub 'arn:aws:s3:::${S3OutputBucket}/*'
+        - PolicyName: SSMParameterAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/stt-pipeline/*'
+
+  WorkerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub 'stt-worker-profile-${Environment}'
+      Roles:
+        - !Ref WorkerRole
+
+  # ============================================================
+  # Security Group (outbound only)
+  # ============================================================
+  WorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupName: !Sub 'stt-worker-sg-${Environment}'
+      GroupDescription: Security group for STT worker instances (outbound only)
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Allow all outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub 'stt-worker-sg-${Environment}'
+
+  # ============================================================
+  # Launch Template
+  # ============================================================
+  WorkerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub 'stt-worker-template-${Environment}'
+      LaunchTemplateData:
+        ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
+        InstanceType: c6i.large  # Default, overridden by ASG
+        IamInstanceProfile:
+          Arn: !GetAtt WorkerInstanceProfile.Arn
+        SecurityGroupIds:
+          - !GetAtt WorkerSecurityGroup.GroupId
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 30
+              VolumeType: gp3
+              DeleteOnTermination: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub 'stt-worker-${Environment}'
+              - Key: Environment
+                Value: !Ref Environment
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -e
+            exec > >(tee /var/log/user-data.log) 2>&1
+            echo "Starting STT Worker setup..."
+            
+            # Update system
+            dnf update -y
+            dnf install -y python3.11 python3.11-pip git
+            
+            # Install ffmpeg
+            dnf install -y https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm || true
+            dnf install -y ffmpeg || {
+              # Fallback: install from static build
+              cd /tmp
+              curl -L -o ffmpeg.tar.xz https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz
+              tar xf ffmpeg.tar.xz
+              cp ffmpeg-*-amd64-static/ffmpeg /usr/local/bin/
+              cp ffmpeg-*-amd64-static/ffprobe /usr/local/bin/
+              chmod +x /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+            }
+            
+            # Clone repository
+            cd /opt
+            git clone ${GitRepoUrl} stt-split-audio || {
+              echo "Git clone failed, using S3 fallback..."
+              aws s3 cp s3://${S3OutputBucket}/deploy/stt-split-audio.tar.gz /tmp/
+              tar xzf /tmp/stt-split-audio.tar.gz -C /opt/
+            }
+            cd /opt/stt-split-audio
+            
+            # Install Python dependencies
+            pip3.11 install --no-cache-dir -r requirements.txt
+            pip3.11 install --no-cache-dir boto3 torch torchaudio pydub silero
+            
+            # Create environment file
+            cat > /opt/stt-split-audio/.env << 'ENVEOF'
+            AWS_REGION=${AWS::Region}
+            AWS_S3_BUCKET=${S3OutputBucket}
+            SQS_SPLIT_QUEUE_NAME=${SQSQueueName}
+            MINIO_ENDPOINT=${MinIOEndpoint}
+            MINIO_SECURE=true
+            MINIO_VERIFY_SSL=false
+            ENVEOF
+            
+            # Get secrets from SSM Parameter Store
+            MINIO_ACCESS_KEY=$(aws ssm get-parameter --name /stt-pipeline/minio-access-key --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "monlam")
+            MINIO_SECRET_KEY=$(aws ssm get-parameter --name /stt-pipeline/minio-secret-key --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "")
+            
+            echo "MINIO_ACCESS_KEY=$MINIO_ACCESS_KEY" >> /opt/stt-split-audio/.env
+            echo "MINIO_SECRET_KEY=$MINIO_SECRET_KEY" >> /opt/stt-split-audio/.env
+            
+            # Create systemd service
+            cat > /etc/systemd/system/stt-worker.service << 'SVCEOF'
+            [Unit]
+            Description=STT Split Worker
+            After=network.target
+            
+            [Service]
+            Type=simple
+            User=root
+            WorkingDirectory=/opt/stt-split-audio
+            EnvironmentFile=/opt/stt-split-audio/.env
+            ExecStart=/usr/bin/python3.11 -m workers.split_worker
+            Restart=always
+            RestartSec=10
+            
+            [Install]
+            WantedBy=multi-user.target
+            SVCEOF
+            
+            # Start worker service
+            systemctl daemon-reload
+            systemctl enable stt-worker
+            systemctl start stt-worker
+            
+            echo "STT Worker setup complete!"
+
+  # ============================================================
+  # Auto Scaling Group with Spot Instances
+  # ============================================================
+  WorkerAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub 'stt-workers-${Environment}'
+      MinSize: 0
+      MaxSize: !Ref MaxWorkers
+      DesiredCapacity: 0
+      MixedInstancesPolicy:
+        InstancesDistribution:
+          OnDemandBaseCapacity: 0
+          OnDemandPercentageAboveBaseCapacity: 0  # 100% Spot
+          SpotAllocationStrategy: capacity-optimized
+        LaunchTemplate:
+          LaunchTemplateSpecification:
+            LaunchTemplateId: !Ref WorkerLaunchTemplate
+            Version: !GetAtt WorkerLaunchTemplate.LatestVersionNumber
+          Overrides:
+            - InstanceType: c6i.large
+            - InstanceType: c6a.large
+            - InstanceType: c5.large
+            - InstanceType: c5a.large
+            - InstanceType: m6i.large
+            - InstanceType: m6a.large
+      AvailabilityZones:
+        - !Sub '${AWS::Region}a'
+        - !Sub '${AWS::Region}b'
+        - !Sub '${AWS::Region}c'
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 300
+      TerminationPolicies:
+        - OldestInstance
+      Tags:
+        - Key: Name
+          Value: !Sub 'stt-worker-${Environment}'
+          PropagateAtLaunch: true
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 0
+
+  # ============================================================
+  # Scaling Policy - Scale based on SQS Queue Depth
+  # ============================================================
+  ScaleUpPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref WorkerAutoScalingGroup
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        CustomizedMetricSpecification:
+          MetricName: ApproximateNumberOfMessagesVisible
+          Namespace: AWS/SQS
+          Dimensions:
+            - Name: QueueName
+              Value: !Ref SQSQueueName
+          Statistic: Average
+        TargetValue: 10  # Target 10 messages per instance
+        DisableScaleIn: false
+
+  # ============================================================
+  # CloudWatch Alarm for Scale-to-Zero
+  # ============================================================
+  QueueEmptyAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub 'stt-queue-empty-${Environment}'
+      AlarmDescription: Scale to zero when queue is empty for 5 minutes
+      MetricName: ApproximateNumberOfMessagesVisible
+      Namespace: AWS/SQS
+      Dimensions:
+        - Name: QueueName
+          Value: !Ref SQSQueueName
+      Statistic: Average
+      Period: 60
+      EvaluationPeriods: 5
+      Threshold: 0
+      ComparisonOperator: LessThanOrEqualToThreshold
+      AlarmActions:
+        - !Ref ScaleToZeroPolicy
+
+  ScaleToZeroPolicy:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName: !Ref WorkerAutoScalingGroup
+      PolicyType: SimpleScaling
+      AdjustmentType: ExactCapacity
+      ScalingAdjustment: 0
+
+  # ============================================================
+  # CloudWatch Dashboard
+  # ============================================================
+  MonitoringDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub 'stt-pipeline-${Environment}'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "SQS Queue Depth",
+                "metrics": [
+                  ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${SQSQueueName}"],
+                  [".", "ApproximateNumberOfMessagesNotVisible", ".", "."]
+                ],
+                "period": 60,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Worker Instance Count",
+                "metrics": [
+                  ["AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", "stt-workers-${Environment}"],
+                  [".", "GroupDesiredCapacity", ".", "."]
+                ],
+                "period": 60,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Messages Processed",
+                "metrics": [
+                  ["AWS/SQS", "NumberOfMessagesReceived", "QueueName", "${SQSQueueName}"],
+                  [".", "NumberOfMessagesDeleted", ".", "."]
+                ],
+                "period": 60,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "S3 Output Activity",
+                "metrics": [
+                  ["AWS/S3", "PutRequests", "BucketName", "${S3OutputBucket}", "FilterId", "AllObjects"]
+                ],
+                "period": 60,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  AutoScalingGroupName:
+    Description: Name of the Auto Scaling Group
+    Value: !Ref WorkerAutoScalingGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-ASGName'
+
+  LaunchTemplateId:
+    Description: ID of the Launch Template
+    Value: !Ref WorkerLaunchTemplate
+
+  WorkerRoleArn:
+    Description: ARN of the Worker IAM Role
+    Value: !GetAtt WorkerRole.Arn
+
+  SecurityGroupId:
+    Description: ID of the Worker Security Group
+    Value: !GetAtt WorkerSecurityGroup.GroupId
+
+  DashboardUrl:
+    Description: URL to the CloudWatch Dashboard
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=stt-pipeline-${Environment}'

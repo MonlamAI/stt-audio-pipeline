@@ -1,0 +1,18 @@
+{
+    "DEPARTMENT": "NW",
+    "FROM_ID": 1,
+    "TO_ID": 2,
+    "ID_COL": "ID",
+    "LINK_COL": "Audio URL",
+    "SR_COL": "Sr.no",
+    "PREFIX": "STT_NW",
+    "SEGMENT_DIR": "../data/segments_nw",
+    "DOWNLOAD_AUDIO_DIR": "../data/NW_full_audio",
+    "FILE_FORMAT": "wav",
+    "S3_BUCKET": "s3://monlam.ai.stt/wav16k/",
+    "SHEET_ID": "1732g2pCbeuTUGjtep_V-8vaKAGzTK41662ehGepGdSQ",
+    "GROUP_ID": 20,
+    "STT_NW_GA": 20,
+    "STT_NW_GB": 22,
+    "OUTPUT_DIRECTORY_16K": "../data/16k"
+}

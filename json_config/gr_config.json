@@ -1,0 +1,18 @@
+{
+    "DEPARTMENT": "GR",
+    "FROM_ID": 1,
+    "TO_ID": 3,
+    "ID_COL": "ID",
+    "LINK_COL": "Filename",
+    "SR_COL": "Sr.no",
+    "PREFIX": "STT_GR",
+    "SEGMENT_DIR": "../data/segments_gr",
+    "DOWNLOAD_AUDIO_DIR": "../data/GR_full_audio",
+    "FILE_FORMAT": "wav",
+    "S3_BUCKET": "s3://monlam.ai.stt/wav16k/",
+    "SHEET_ID": "1P60PS45yMAHOQZzxw8WM8IBrVbOL6DCeHyVC6Pv6oFE",
+    "GROUP_ID": 4,
+    "STT_GR_GA" : 4,
+    "STT_GR_GB" : 3
+
+}

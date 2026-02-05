@@ -1,0 +1,47 @@
+# Credentials and secrets
+util/credentials.json
+util/token.json
+.env
+deploy/.env
+*.env
+
+# Data files
+data/CS.csv
+data/NS.csv
+data/PC.csv
+
+# Test outputs (don't commit audio files)
+output_segments/
+*.wav
+*.mp3
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+.data
+
+# Virtual environment
+.venv
+venv/
+env/
+
+# Test files
+run_all1.sh
+audio_download_and_split/test_urldownload.py
+
+# Temporary files
+*.tmp
+*.log

@@ -1,0 +1,87 @@
+version: '3.8'
+
+services:
+  # Split workers - pull from SQS, download from MinIO audio bucket, split, upload segments
+  # This is the main worker for Monlam audio processing (files already in MinIO)
+  split-worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: python -m workers.split_worker
+    deploy:
+      replicas: 8  # Adjust based on CPU cores (1 per 2 cores recommended)
+    env_file:
+      - .env
+    environment:
+      - WORKER_TYPE=split
+      - MINIO_SOURCE_BUCKET=audio
+      - MINIO_SEGMENTS_BUCKET=segments
+    restart: unless-stopped
+    volumes:
+      - /tmp/stt-split:/tmp  # Temp storage for processing
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Download workers - only needed for external sources (YouTube, GDrive, etc.)
+  # Not needed for Monlam audio since files are already in MinIO
+  download-worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: python -m workers.download_worker
+    deploy:
+      replicas: 0  # Set to 0 for Monlam audio, increase for external downloads
+    env_file:
+      - .env
+    environment:
+      - WORKER_TYPE=download
+    restart: unless-stopped
+    volumes:
+      - /tmp/stt-download:/tmp
+    profiles:
+      - external  # Only run with: docker-compose --profile external up download-worker
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # Scheduler - enqueue jobs for processing
+  scheduler:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: >
+      python -m job_queue.scheduler 
+      --source bucket 
+      --bucket audio 
+      --collections amdo,kham,utsang
+      --segments-bucket segments
+    env_file:
+      - .env
+    profiles:
+      - tools  # Run with: docker-compose --profile tools run scheduler
+
+  # Scheduler for all collections (85K+ hours - use with caution!)
+  scheduler-all:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    command: >
+      python -m job_queue.scheduler 
+      --source bucket 
+      --bucket audio
+      --segments-bucket segments
+    env_file:
+      - .env
+    profiles:
+      - tools-all  # Run with: docker-compose --profile tools-all run scheduler-all
+
+# Use external network if MinIO is running separately
+networks:
+  default:
+    name: stt-network
+    external: false

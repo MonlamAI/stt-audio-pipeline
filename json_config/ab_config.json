@@ -1,0 +1,20 @@
+{
+    "DEPARTMENT": "AB",
+    "FROM_ID": 1,
+    "TO_ID": 2,
+    "ID_COL": "ID",
+    "LINK_COL": "Audio link",
+    "SR_COL": "z",
+    "PREFIX": "STT_AB",
+    "SEGMENT_DIR": "../data/segments_ab",
+    "DOWNLOAD_AUDIO_DIR": "../data/AB_full_audio",
+    "DOWNLOAD_VEDIOS_DIR": "../data/AB_full_videos",
+    "FILE_FORMAT": "wav",
+    "S3_BUCKET": "s3://monlam.ai.stt/wav16k/",
+    "SHEET_ID": "1yKSzConuVWo8BuMDs2mabF5iiBKUz2wF--LIabFN6QE",
+    "GROUP_ID": 1,
+    "STT_CS_GA" : 1,
+    "STT_CS_GB" : 2,
+    "STT_CS_GF" : 7
+
+}

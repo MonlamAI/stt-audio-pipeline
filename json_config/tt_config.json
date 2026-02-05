@@ -1,0 +1,20 @@
+{
+    "DEPARTMENT": "TT",
+    "FROM_ID": 208,
+    "TO_ID": 213,
+    "ID_COL": "ID",
+    "LINK_COL": "Audio link",
+    "SR_COL": "Sr.no",
+    "PREFIX": "STT_TT",
+    "SEGMENT_DIR": "segments_tt",
+    "DOWNLOAD_AUDIO_DIR": "./TT_full_audio",
+    "DOWNLOAD_VEDIOS_DIR": "./TT_full_videos",
+    "FILE_FORMAT": "wav",
+    "S3_BUCKET": "s3://monlam.ai.stt/wav16k/",
+    "SHEET_ID": "1zX1JEUigHX5gSwfJKqeerhs_5Xxkq8wFbpVUBjrKEnc",
+    "COOKIES_PATH": "./cookies.txt",
+    "GROUP_ID": 11,
+    "STT_TT_GA": 11,
+    "STT_TT_GB": 12
+    
+}
