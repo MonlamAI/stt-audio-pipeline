@@ -25,7 +25,7 @@ Parameters:
 
   MaxWorkers:
     Type: Number
-    Default: 20
+    Default: 50
     MinValue: 1
     MaxValue: 100
     Description: Maximum number of worker instances

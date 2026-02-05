@@ -237,25 +237,39 @@ def process_split(job: dict):
         os.makedirs(segment_dir, exist_ok=True)
         
         uploaded = []
+        
+        # Prepare all segments first
+        segment_files = []
         for i, seg in enumerate(segments):
             start_ms = int(seg['start'] * 1000)
             end_ms = int(seg['end'] * 1000)
             segment_audio = audio[start_ms:end_ms]
             
-            # Export locally
             local_path = os.path.join(segment_dir, f'segment_{i+1:03d}.wav')
             segment_audio.export(local_path, format='wav')
             
-            # Upload to S3
-            s3_key = f"{output_prefix}/segment_{i+1:03d}.wav"
-            s3_client.upload_file(local_path, output_bucket, s3_key)
-            
-            uploaded.append({
-                'filename': f'segment_{i+1:03d}.wav',
-                'start_sec': round(seg['start'], 2),
-                'end_sec': round(seg['end'], 2),
-                'duration_sec': round(seg['duration'], 2)
+            segment_files.append({
+                'local_path': local_path,
+                's3_key': f"{output_prefix}/segment_{i+1:03d}.wav",
+                'info': {
+                    'filename': f'segment_{i+1:03d}.wav',
+                    'start_sec': round(seg['start'], 2),
+                    'end_sec': round(seg['end'], 2),
+                    'duration_sec': round(seg['duration'], 2)
+                }
             })
+        
+        # Parallel upload using ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        
+        def upload_segment(seg_info):
+            s3_client.upload_file(seg_info['local_path'], output_bucket, seg_info['s3_key'])
+            return seg_info['info']
+        
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = {executor.submit(upload_segment, sf): sf for sf in segment_files}
+            for future in as_completed(futures):
+                uploaded.append(future.result())
         
         # Upload metadata
         meta = {
@@ -315,7 +329,7 @@ def run_split_worker():
         try:
             messages = receive_messages(
                 queue_url,
-                max_messages=1,  # Process one at a time for reliability
+                max_messages=5,  # Process multiple for speed
                 wait_time_seconds=20,
                 visibility_timeout=900  # 15 minutes for large files
             )
