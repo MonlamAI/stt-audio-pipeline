@@ -170,9 +170,9 @@ Resources:
             }
             cd /opt/stt-split-audio
             
-            # Install Python dependencies
-            pip3.11 install --no-cache-dir -r requirements.txt
-            pip3.11 install --no-cache-dir boto3 torch torchaudio pydub silero
+            # Install Python dependencies (lightweight - only what worker needs)
+            pip3.11 install --no-cache-dir boto3 pydub python-dotenv certifi numpy packaging
+            pip3.11 install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu
             
             # Create environment file
             cat > /opt/stt-split-audio/.env << 'ENVEOF'
