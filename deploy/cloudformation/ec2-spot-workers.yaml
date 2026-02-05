@@ -37,7 +37,7 @@ Parameters:
 
   GitRepoUrl:
     Type: String
-    Default: 'https://github.com/MonlamAI/stt-audio-pipeline.git'
+    Default: 'https://github.com/monlam-ai/stt-split-audio.git'
     Description: Git repository URL for worker code
 
 Resources:
@@ -170,9 +170,9 @@ Resources:
             }
             cd /opt/stt-split-audio
             
-            # Install Python dependencies (lightweight - only what worker needs)
-            pip3.11 install --no-cache-dir boto3 pydub python-dotenv certifi
-            pip3.11 install --no-cache-dir torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+            # Install Python dependencies
+            pip3.11 install --no-cache-dir -r requirements.txt
+            pip3.11 install --no-cache-dir boto3 torch torchaudio pydub silero
             
             # Create environment file
             cat > /opt/stt-split-audio/.env << 'ENVEOF'
