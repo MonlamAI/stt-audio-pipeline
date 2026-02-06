@@ -93,6 +93,8 @@ def upload_file(local_path: str, bucket: str, object_name: str):
 def download_file(bucket: str, object_name: str, local_path: str):
     """
     Download a file from MinIO/S3 to local path.
+    Uses get_object instead of download_file to avoid HEAD request,
+    which some MinIO configurations block with 403.
     
     Args:
         bucket: Source bucket name
@@ -104,13 +106,19 @@ def download_file(bucket: str, object_name: str, local_path: str):
     # Ensure parent directory exists
     os.makedirs(os.path.dirname(local_path) or '.', exist_ok=True)
     
-    client.download_file(bucket, object_name, local_path)
+    # Use get_object (GET) instead of download_file which calls HEAD first.
+    # Some MinIO servers return 403 on HEAD but allow GET.
+    response = client.get_object(Bucket=bucket, Key=object_name)
+    with open(local_path, 'wb') as f:
+        for chunk in response['Body'].iter_chunks(chunk_size=1024 * 1024):
+            f.write(chunk)
     print(f"Downloaded s3://{bucket}/{object_name} -> {local_path}")
 
 
 def object_exists(bucket: str, object_name: str) -> bool:
     """
     Check if object exists in bucket (for idempotency).
+    Uses list_objects_v2 instead of head_object to avoid 403 on some MinIO configs.
     
     Args:
         bucket: Bucket name
@@ -121,8 +129,11 @@ def object_exists(bucket: str, object_name: str) -> bool:
     """
     try:
         client = get_s3_client()
-        client.head_object(Bucket=bucket, Key=object_name)
-        return True
+        response = client.list_objects_v2(Bucket=bucket, Prefix=object_name, MaxKeys=1)
+        for obj in response.get('Contents', []):
+            if obj['Key'] == object_name:
+                return True
+        return False
     except ClientError:
         return False
 
