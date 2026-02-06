@@ -280,19 +280,41 @@ Resources:
 
   # ============================================================
   # CloudWatch Alarm for Scale-to-Zero
+  # Checks BOTH visible AND in-flight messages to avoid
+  # killing workers while they are still processing jobs.
   # ============================================================
   QueueEmptyAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub 'stt-queue-empty-${Environment}'
-      AlarmDescription: Scale to zero when queue is empty for 5 minutes
-      MetricName: ApproximateNumberOfMessagesVisible
-      Namespace: AWS/SQS
-      Dimensions:
-        - Name: QueueName
-          Value: !Ref SQSQueueName
-      Statistic: Average
-      Period: 60
+      AlarmDescription: Scale to zero only when queue has no visible AND no in-flight messages for 5 minutes
+      Metrics:
+        - Id: visible
+          MetricStat:
+            Metric:
+              MetricName: ApproximateNumberOfMessagesVisible
+              Namespace: AWS/SQS
+              Dimensions:
+                - Name: QueueName
+                  Value: !Ref SQSQueueName
+            Period: 60
+            Stat: Average
+          ReturnData: false
+        - Id: inflight
+          MetricStat:
+            Metric:
+              MetricName: ApproximateNumberOfMessagesNotVisible
+              Namespace: AWS/SQS
+              Dimensions:
+                - Name: QueueName
+                  Value: !Ref SQSQueueName
+            Period: 60
+            Stat: Average
+          ReturnData: false
+        - Id: total_messages
+          Expression: 'visible + inflight'
+          Label: TotalMessages
+          ReturnData: true
       EvaluationPeriods: 5
       Threshold: 0
       ComparisonOperator: LessThanOrEqualToThreshold
