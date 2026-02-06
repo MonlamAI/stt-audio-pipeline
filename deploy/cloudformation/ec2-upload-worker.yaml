@@ -1,0 +1,358 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'MinIO-to-S3 Upload Pipeline - EC2 Upload Worker'
+
+Parameters:
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: ['dev', 'staging', 'prod']
+    Description: Environment name
+
+  SQSQueueName:
+    Type: String
+    Default: 'stt-upload-jobs'
+    Description: Name of the SQS queue for upload jobs
+
+  S3OutputBucket:
+    Type: String
+    Default: 'monlamai-stt-raw-audio'
+    Description: S3 bucket for uploaded audio (raw-audio/ prefix)
+
+  MinIOEndpoint:
+    Type: String
+    Default: 's3.monlam.ai'
+    Description: MinIO endpoint for source audio
+
+  InstanceType:
+    Type: String
+    Default: 'c6i.xlarge'
+    Description: EC2 instance type (4 vCPU, 8 GB RAM)
+
+  DesiredCapacity:
+    Type: Number
+    Default: 1
+    MinValue: 0
+    MaxValue: 10
+    Description: Number of upload worker instances
+
+  GitRepoUrl:
+    Type: String
+    Default: 'https://github.com/MonlamAI/stt-audio-pipeline.git'
+    Description: Git repository URL for worker code
+
+Resources:
+  # ============================================================
+  # SQS Queue for Upload Jobs
+  # ============================================================
+  UploadQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Ref SQSQueueName
+      VisibilityTimeout: 900        # 15 minutes
+      MessageRetentionPeriod: 1209600  # 14 days
+      ReceiveMessageWaitTimeSeconds: 20  # Long polling
+
+  # ============================================================
+  # IAM Role for EC2 Upload Workers
+  # ============================================================
+  UploadWorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'stt-upload-worker-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: SQSAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:GetQueueUrl
+                  - sqs:ChangeMessageVisibility
+                Resource: !GetAtt UploadQueue.Arn
+        - PolicyName: S3Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${S3OutputBucket}'
+                  - !Sub 'arn:aws:s3:::${S3OutputBucket}/*'
+        - PolicyName: SSMParameterAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/stt-pipeline/*'
+
+  UploadWorkerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub 'stt-upload-worker-profile-${Environment}'
+      Roles:
+        - !Ref UploadWorkerRole
+
+  # ============================================================
+  # Security Group (outbound only, uses default VPC)
+  # ============================================================
+  UploadWorkerSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for STT upload worker instances (outbound only)
+      Tags:
+        - Key: Name
+          Value: !Sub 'stt-upload-worker-sg-${Environment}'
+
+  # ============================================================
+  # Launch Template
+  # ============================================================
+  UploadWorkerLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub 'stt-upload-worker-template-${Environment}'
+      LaunchTemplateData:
+        ImageId: !Sub '{{resolve:ssm:/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64}}'
+        InstanceType: !Ref InstanceType
+        IamInstanceProfile:
+          Arn: !GetAtt UploadWorkerInstanceProfile.Arn
+        SecurityGroupIds:
+          - !GetAtt UploadWorkerSecurityGroup.GroupId
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 20
+              VolumeType: gp3
+              DeleteOnTermination: true
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub 'stt-upload-worker-${Environment}'
+              - Key: Environment
+                Value: !Ref Environment
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            set -e
+            exec > >(tee /var/log/user-data.log) 2>&1
+            echo "Starting STT Upload Worker setup..."
+            
+            # Update system
+            dnf update -y
+            dnf install -y python3.11 python3.11-pip git
+            
+            # Clone repository
+            cd /opt
+            git clone ${GitRepoUrl} stt-split-audio || {
+              echo "Git clone failed, using S3 fallback..."
+              aws s3 cp s3://${S3OutputBucket}/deploy/stt-split-audio.tar.gz /tmp/
+              tar xzf /tmp/stt-split-audio.tar.gz -C /opt/
+            }
+            cd /opt/stt-split-audio
+            
+            # Install Python dependencies (lightweight - only boto3 needed for transfers)
+            pip3.11 install --no-cache-dir boto3 python-dotenv
+            
+            # Create environment file
+            cat > /opt/stt-split-audio/.env << 'ENVEOF'
+            AWS_REGION=${AWS::Region}
+            AWS_S3_BUCKET=${S3OutputBucket}
+            SQS_UPLOAD_QUEUE_NAME=${SQSQueueName}
+            MINIO_ENDPOINT=${MinIOEndpoint}
+            MINIO_SECURE=true
+            MINIO_VERIFY_SSL=false
+            ENVEOF
+            
+            # Get secrets from SSM Parameter Store
+            MINIO_ACCESS_KEY=$(aws ssm get-parameter --name /stt-pipeline/minio-access-key --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "monlam")
+            MINIO_SECRET_KEY=$(aws ssm get-parameter --name /stt-pipeline/minio-secret-key --with-decryption --query Parameter.Value --output text 2>/dev/null || echo "")
+            
+            echo "MINIO_ACCESS_KEY=$MINIO_ACCESS_KEY" >> /opt/stt-split-audio/.env
+            echo "MINIO_SECRET_KEY=$MINIO_SECRET_KEY" >> /opt/stt-split-audio/.env
+            
+            # Create systemd service
+            cat > /etc/systemd/system/stt-upload-worker.service << 'SVCEOF'
+            [Unit]
+            Description=STT Upload Worker (MinIO to S3)
+            After=network.target
+            
+            [Service]
+            Type=simple
+            User=root
+            WorkingDirectory=/opt/stt-split-audio
+            EnvironmentFile=/opt/stt-split-audio/.env
+            ExecStart=/usr/bin/python3.11 -m workers.upload_worker
+            Restart=always
+            RestartSec=10
+            
+            [Install]
+            WantedBy=multi-user.target
+            SVCEOF
+            
+            # Start worker service
+            systemctl daemon-reload
+            systemctl enable stt-upload-worker
+            systemctl start stt-upload-worker
+            
+            echo "STT Upload Worker setup complete!"
+
+  # ============================================================
+  # Auto Scaling Group (On-Demand for reliability)
+  # ============================================================
+  UploadWorkerAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AutoScalingGroupName: !Sub 'stt-upload-workers-${Environment}'
+      MinSize: 0
+      MaxSize: 10
+      DesiredCapacity: !Ref DesiredCapacity
+      LaunchTemplate:
+        LaunchTemplateId: !Ref UploadWorkerLaunchTemplate
+        Version: !GetAtt UploadWorkerLaunchTemplate.LatestVersionNumber
+      AvailabilityZones:
+        - !Sub '${AWS::Region}a'
+        - !Sub '${AWS::Region}b'
+        - !Sub '${AWS::Region}c'
+      HealthCheckType: EC2
+      HealthCheckGracePeriod: 300
+      TerminationPolicies:
+        - OldestInstance
+      Tags:
+        - Key: Name
+          Value: !Sub 'stt-upload-worker-${Environment}'
+          PropagateAtLaunch: true
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService: 0
+
+  # ============================================================
+  # CloudWatch Dashboard
+  # ============================================================
+  UploadMonitoringDashboard:
+    Type: AWS::CloudWatch::Dashboard
+    Properties:
+      DashboardName: !Sub 'stt-upload-pipeline-${Environment}'
+      DashboardBody: !Sub |
+        {
+          "widgets": [
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Upload Queue Depth",
+                "metrics": [
+                  ["AWS/SQS", "ApproximateNumberOfMessagesVisible", "QueueName", "${SQSQueueName}"],
+                  [".", "ApproximateNumberOfMessagesNotVisible", ".", "."]
+                ],
+                "period": 60,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 0,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Upload Worker Instances",
+                "metrics": [
+                  ["AWS/AutoScaling", "GroupInServiceInstances", "AutoScalingGroupName", "stt-upload-workers-${Environment}"],
+                  [".", "GroupDesiredCapacity", ".", "."]
+                ],
+                "period": 60,
+                "stat": "Average",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 0,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "Messages Processed",
+                "metrics": [
+                  ["AWS/SQS", "NumberOfMessagesReceived", "QueueName", "${SQSQueueName}"],
+                  [".", "NumberOfMessagesDeleted", ".", "."]
+                ],
+                "period": 60,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            },
+            {
+              "type": "metric",
+              "x": 12,
+              "y": 6,
+              "width": 12,
+              "height": 6,
+              "properties": {
+                "title": "S3 Upload Activity",
+                "metrics": [
+                  ["AWS/S3", "PutRequests", "BucketName", "${S3OutputBucket}", "FilterId", "AllObjects"]
+                ],
+                "period": 60,
+                "stat": "Sum",
+                "region": "${AWS::Region}"
+              }
+            }
+          ]
+        }
+
+Outputs:
+  UploadQueueUrl:
+    Description: URL of the upload SQS queue
+    Value: !Ref UploadQueue
+    Export:
+      Name: !Sub '${AWS::StackName}-UploadQueueUrl'
+
+  UploadQueueArn:
+    Description: ARN of the upload SQS queue
+    Value: !GetAtt UploadQueue.Arn
+
+  AutoScalingGroupName:
+    Description: Name of the Upload Worker Auto Scaling Group
+    Value: !Ref UploadWorkerAutoScalingGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-UploadASGName'
+
+  LaunchTemplateId:
+    Description: ID of the Upload Worker Launch Template
+    Value: !Ref UploadWorkerLaunchTemplate
+
+  UploadWorkerRoleArn:
+    Description: ARN of the Upload Worker IAM Role
+    Value: !GetAtt UploadWorkerRole.Arn
+
+  SecurityGroupId:
+    Description: ID of the Upload Worker Security Group
+    Value: !GetAtt UploadWorkerSecurityGroup.GroupId
+
+  DashboardUrl:
+    Description: URL to the CloudWatch Dashboard
+    Value: !Sub 'https://${AWS::Region}.console.aws.amazon.com/cloudwatch/home?region=${AWS::Region}#dashboards:name=stt-upload-pipeline-${Environment}'
