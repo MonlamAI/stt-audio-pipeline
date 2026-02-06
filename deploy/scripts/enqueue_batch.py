@@ -75,7 +75,8 @@ def list_audio_files(minio_client, bucket, collection=None, limit=1000):
     return files
 
 
-def enqueue_jobs(sqs_client, queue_url, files, source_bucket, output_bucket, batch_id=None):
+def enqueue_jobs(sqs_client, queue_url, files, source_bucket, output_bucket,
+                 batch_id=None, source_type='minio'):
     """Enqueue split jobs to SQS."""
     batch_id = batch_id or datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
     
@@ -90,15 +91,19 @@ def enqueue_jobs(sqs_client, queue_url, files, source_bucket, output_bucket, bat
         for j, file in enumerate(batch):
             job_id = f"{batch_id}-{enqueued + j:05d}"
             
+            # For S3 source, use original_key (without raw-audio/ prefix)
+            source_key = file.get('original_key', file['key'])
+            
             # Extract collection and filename from key
-            parts = file['key'].split('/')
+            parts = source_key.split('/')
             collection = parts[0] if len(parts) > 1 else 'unknown'
             filename = os.path.splitext(parts[-1])[0]
             
             message = {
                 'job_id': job_id,
-                'source_bucket': source_bucket,
-                'source_key': file['key'],
+                'source_type': source_type,  # 'minio' or 's3'
+                'source_bucket': source_bucket if source_type == 'minio' else output_bucket,
+                'source_key': file['key'] if source_type == 's3' else source_key,
                 'output_bucket': output_bucket,
                 'output_prefix': f"{collection}/{filename}",
                 'max_duration': 30,
@@ -136,11 +141,48 @@ def enqueue_jobs(sqs_client, queue_url, files, source_bucket, output_bucket, bat
     return enqueued, failed
 
 
+def get_s3_source_client():
+    """Get AWS S3 client for listing source files (when using --source s3)."""
+    return boto3.client(
+        's3',
+        region_name=os.environ.get('AWS_REGION', 'us-east-1'),
+        aws_access_key_id=os.environ.get('AWS_ACCESS_KEY_ID'),
+        aws_secret_access_key=os.environ.get('AWS_SECRET_ACCESS_KEY')
+    )
+
+
+def list_s3_audio_files(s3_client, bucket, collection=None, limit=1000):
+    """List audio files from AWS S3 bucket (raw-audio/ prefix)."""
+    prefix = f"raw-audio/{collection}/" if collection else "raw-audio/"
+    
+    files = []
+    paginator = s3_client.get_paginator('list_objects_v2')
+    
+    for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+        for obj in page.get('Contents', []):
+            key = obj['Key']
+            if key.lower().endswith(('.mp3', '.wav', '.m4a', '.flac', '.ogg')):
+                # Strip "raw-audio/" prefix for the source_key
+                files.append({
+                    'key': key,
+                    'original_key': key[len('raw-audio/'):],  # amdo/file.mp3
+                    'size': obj['Size'],
+                    'last_modified': obj['LastModified'].isoformat()
+                })
+            
+            if len(files) >= limit:
+                return files
+    
+    return files
+
+
 def main():
     parser = argparse.ArgumentParser(description='Enqueue audio files for processing')
     parser.add_argument('--limit', type=int, default=1000, help='Maximum number of files to enqueue')
     parser.add_argument('--collection', type=str, default=None, help='Collection to process (amdo, kham, utsang)')
-    parser.add_argument('--source-bucket', type=str, default='audio', help='Source MinIO bucket')
+    parser.add_argument('--source-bucket', type=str, default='audio', help='Source bucket name')
+    parser.add_argument('--source', type=str, default='minio', choices=['minio', 's3'],
+                        help='Source storage: minio (default) or s3 (after sync)')
     parser.add_argument('--output-bucket', type=str, default=None, help='Output S3 bucket')
     parser.add_argument('--queue-name', type=str, default=None, help='SQS queue name')
     parser.add_argument('--dry-run', action='store_true', help='List files without enqueuing')
@@ -154,17 +196,23 @@ def main():
     print("STT AUDIO PROCESSING - BATCH ENQUEUE")
     print("=" * 60)
     print(f"\nConfiguration:")
-    print(f"  Source bucket: {args.source_bucket}")
+    print(f"  Source: {args.source}")
+    print(f"  Source bucket: {args.source_bucket if args.source == 'minio' else output_bucket}")
     print(f"  Output bucket: {output_bucket}")
     print(f"  Collection: {args.collection or 'all'}")
     print(f"  Limit: {args.limit}")
     print(f"  Queue: {queue_name}")
     print(f"  Dry run: {args.dry_run}")
     
-    # List files from MinIO
-    print(f"\nListing files from MinIO...")
-    minio_client = get_minio_client()
-    files = list_audio_files(minio_client, args.source_bucket, args.collection, args.limit)
+    # List files from source
+    if args.source == 's3':
+        print(f"\nListing files from S3 (raw-audio/ prefix)...")
+        s3_client = get_s3_source_client()
+        files = list_s3_audio_files(s3_client, output_bucket, args.collection, args.limit)
+    else:
+        print(f"\nListing files from MinIO...")
+        minio_client = get_minio_client()
+        files = list_audio_files(minio_client, args.source_bucket, args.collection, args.limit)
     
     print(f"Found {len(files)} audio files")
     
@@ -212,7 +260,8 @@ def main():
     # Enqueue jobs
     print(f"\nEnqueuing {len(files)} jobs...")
     batch_id = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')
-    enqueued, failed = enqueue_jobs(sqs_client, queue_url, files, args.source_bucket, output_bucket, batch_id)
+    enqueued, failed = enqueue_jobs(sqs_client, queue_url, files, args.source_bucket,
+                                    output_bucket, batch_id, source_type=args.source)
     
     print(f"\n" + "=" * 60)
     print("ENQUEUE COMPLETE")

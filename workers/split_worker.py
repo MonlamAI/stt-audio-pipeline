@@ -184,12 +184,20 @@ def process_split(job: dict):
         print(f"  Warning: Could not check existing output: {e}")
     
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Download from MinIO
+        # Download source audio
         source_ext = os.path.splitext(source_key)[1] or '.mp3'
         local_input = os.path.join(tmpdir, f'input{source_ext}')
         
-        print(f"  Downloading from MinIO...")
-        download_file(source_bucket, source_key, local_input)
+        source_type = job.get('source_type', 'minio')
+        
+        if source_type == 's3':
+            # Download from AWS S3 (after sync_minio_to_s3)
+            print(f"  Downloading from S3...")
+            s3_client.download_file(source_bucket, source_key, local_input)
+        else:
+            # Download from MinIO (original path)
+            print(f"  Downloading from MinIO...")
+            download_file(source_bucket, source_key, local_input)
         
         if not os.path.exists(local_input) or os.path.getsize(local_input) == 0:
             raise RuntimeError(f"Download failed: file is empty or missing")
