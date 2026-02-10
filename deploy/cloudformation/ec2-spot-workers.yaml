@@ -83,6 +83,13 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:s3:::${S3OutputBucket}'
                   - !Sub 'arn:aws:s3:::${S3OutputBucket}/*'
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - 'arn:aws:s3:::audio2026'
+                  - 'arn:aws:s3:::audio2026/*'
         - PolicyName: SSMParameterAccess
           PolicyDocument:
             Version: '2012-10-17'
